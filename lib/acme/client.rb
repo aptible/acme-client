@@ -137,22 +137,18 @@ class Acme::Client
 
     return pem if force_chain.nil? && force_chain_fingerprint.nil?
 
-    return pem if ChainIdentifier.new(pem)
-                                 .match?(name: force_chain, fingerprint: force_chain_fingerprint)
-    # TODO: Remove Array() after decode_link_headers fix
-    #
-    #   FaradayMiddleware#decode_link_headers a single entry
-    #   per rel= but nothing prevent it in the spec.
     alternative_urls = Array(response.headers.fetch(:link, {})['alternate'])
     alternative_urls.each do |alternate_url|
       response = download(alternate_url, format: :pem)
-      pem = response.body
-      if ChainIdentifier.new(pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
-        return pem
+      alternate_pem = response.body
+      if ChainIdentifier.new(alternate_pem).match_name?(force_chain)
+        return alternate_pem
       end
     end
 
-    raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain_fingerprint || force_chain}`"
+    return pem if ChainIdentifier.new(pem).match_name?(force_chain)
+
+    raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain}`"
   end
 
   def authorization(url:)
