@@ -80,6 +80,20 @@ describe Acme::Client::Resources::Order do
         finalized_order.certificate(force_chain: force_chain_name)
       }.to raise_error(Acme::Client::Error::ForcedChainNotFound)
     end
+
+    it 'call client certificate with a force_chain_fingerprint', vcr: { cassette_name: 'order_certificate_download_preferred_chain' } do
+      force_chain_fingerprint = 'a6721e5342b38e14d2f163a0658cd9dc8ec72e7c6e070c2895217d9b48e0d7da'
+
+      expect { finalized_order.certificate(force_chain_fingerprint: force_chain_fingerprint) }.not_to raise_error
+    end
+
+    it 'call client certificate with an unmatched fingerprint', vcr: { cassette_name: 'order_certificate_download_preferred_chain' } do
+      force_chain_fingerprint = 'someRanD0MSha'
+
+      expect {
+        finalized_order.certificate(force_chain: force_chain_fingerprint)
+      }.to raise_error(Acme::Client::Error::ForcedChainNotFound)
+    end
   end
 
   context 'reload' do
