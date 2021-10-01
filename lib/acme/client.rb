@@ -128,13 +128,17 @@ class Acme::Client
     Acme::Client::Resources::Order.new(self, **arguments)
   end
 
-  def certificate(url:, force_chain: nil)
+  # `force_chain_fingerprint` should be a SHA256 fingerprint of the expected CA in the chain.
+  # If both `force_chain` and `force_chain_fingerprint` are provided,
+  # `force_chain_fingerprint` takes precedence.
+  def certificate(url:, force_chain: nil, force_chain_fingerprint: nil)
     response = download(url, format: :pem)
     pem = response.body
 
-    return pem if force_chain.nil?
+    return pem if force_chain.nil? && force_chain_fingerprint.nil?
 
-    return pem if ChainIdentifier.new(pem).match_name?(force_chain)
+    return pem if ChainIdentifier.new(pem)
+                                 .match?(name: force_chain, fingerprint: force_chain_fingerprint)
     # TODO: Remove Array() after decode_link_headers fix
     #
     #   FaradayMiddleware#decode_link_headers a single entry
@@ -143,12 +147,12 @@ class Acme::Client
     alternative_urls.each do |alternate_url|
       response = download(alternate_url, format: :pem)
       pem = response.body
-      if ChainIdentifier.new(pem).match_name?(force_chain)
+      if ChainIdentifier.new(pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
         return pem
       end
     end
 
-    raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain}`"
+    raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain_fingerprint || force_chain}`"
   end
 
   def authorization(url:)

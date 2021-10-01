@@ -238,7 +238,8 @@ describe Acme::Client do
 
             order = client.finalize(url: finalize_url, csr: csr)
             finalized_order = client.order(url: order.url)
-            certificate = client.certificate(url: finalized_order.certificate_url, force_chain: 'Pebble Root CA')
+            fingerprint = '508494af86890199b188befb827c75ae97538272e8dba4c27852b4ce8b96b248'
+            certificate = client.certificate(url: finalized_order.certificate_url, force_chain_fingerprint: fingerprint)
 
             expect { OpenSSL::X509::Certificate.new(certificate) }.not_to raise_error
           end
