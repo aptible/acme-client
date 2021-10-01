@@ -141,12 +141,12 @@ class Acme::Client
     alternative_urls.each do |alternate_url|
       response = download(alternate_url, format: :pem)
       alternate_pem = response.body
-      if ChainIdentifier.new(alternate_pem).match_name?(force_chain)
+      if ChainIdentifier.new(alternate_pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
         return alternate_pem
       end
     end
 
-    return pem if ChainIdentifier.new(pem).match_name?(force_chain)
+    return pem if ChainIdentifier.new(pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
 
     raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain}`"
   end
