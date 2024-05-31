@@ -13,7 +13,9 @@ class Acme::Client
     end
 
     def match_name?(name)
-      issuers.last.include?(name)
+      issuers.any? do |issuer|
+        issuers.last.include?(name)
+      end
     end
 
     def match_fingerprint?(fingerprint)

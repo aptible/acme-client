@@ -5,7 +5,7 @@ class Acme::Client::Resources::Authorization
 
   def initialize(client, **arguments)
     @client = client
-    assign_attributes(arguments)
+    assign_attributes(**arguments)
   end
 
   def deactivate
@@ -56,7 +56,7 @@ class Acme::Client::Resources::Authorization
       type: attributes.fetch('type'),
       status: attributes.fetch('status'),
       url: attributes.fetch('url'),
-      token: attributes.fetch('token'),
+      token: attributes.fetch('token', nil),
       error: attributes['error']
     }
     Acme::Client::Resources::Challenges.new(@client, **arguments)

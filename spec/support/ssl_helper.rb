@@ -5,17 +5,24 @@ module SSLHelper
     KEYSTASH_PATH = File.join(__dir__, '../fixtures/keystash.yml')
 
     def initialize
-      @keystash = load
+      @keystash = load.shuffle
       @iter = @keystash.each
     end
 
     def next
       @iter.next
     rescue StopIteration
-      @keystash << generate_key
-      save
-      @keystash.last
+      raise "Reached the end of the keystash. #{@keystash.size} key is too small. Regenerate with ./bin/generate_keystash."
     end
+
+    def generate_keystash!(size:)
+      @keystash = []
+      size.times { @keystash << generate_key }
+      save
+      true
+    end
+
+    private
 
     def generate_key
       case (rand * 4).to_i
@@ -33,12 +40,9 @@ module SSLHelper
     end
 
     def generate_ecdsa_key(curve)
-      k = OpenSSL::PKey::EC.new(curve)
-      k.generate_key
+      k = OpenSSL::PKey::EC.generate(curve)
       Acme::Client::CertificateRequest::ECKeyPatch.new(k)
     end
-
-    private
 
     def load
       if File.exist?(KEYSTASH_PATH)
@@ -104,16 +108,21 @@ module SSLHelper
   # priv - An OpenSSL::PKey::EC or OpenSSL::PKey::RSA instance.
   #
   # Returns a String.
-  def public_key_to_der(priv)
-    case priv
+  def public_key_to_pem(private_key)
+    case private_key
     when OpenSSL::PKey::EC
-      dup = OpenSSL::PKey::EC.new(priv.to_der)
-      dup.private_key = nil
-      dup.to_der
+      # TODO: Ruby 2.7 shenanigans
+      if OpenSSL::PKey::EC.method_defined?(:to_pem)
+        private_key.to_pem
+      else
+        dup = OpenSSL::PKey::EC.new(private_key.to_der)
+        dup.private_key = nil
+        dup.to_pem
+      end
     when OpenSSL::PKey::RSA
-      priv.public_key.to_der
+      private_key.public_key.to_pem
     else
-      raise ArgumentError, 'priv must be EC or RSA'
+      raise ArgumentError, 'private_key must be EC or RSA'
     end
   end
 end

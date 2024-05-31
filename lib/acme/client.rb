@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'faraday'
+require 'faraday/retry'
 require 'json'
 require 'openssl'
 require 'digest'
@@ -13,10 +14,10 @@ module Acme; end
 class Acme::Client; end
 
 require 'acme/client/version'
+require 'acme/client/http_client'
 require 'acme/client/certificate_request'
 require 'acme/client/self_sign_certificate'
 require 'acme/client/resources'
-require 'acme/client/faraday_middleware'
 require 'acme/client/jwk'
 require 'acme/client/error'
 require 'acme/client/util'
@@ -43,13 +44,14 @@ class Acme::Client
 
     @kid, @connection_options = kid, connection_options
     @bad_nonce_retry = bad_nonce_retry
-    @directory = Acme::Client::Resources::Directory.new(URI(directory), @connection_options)
+    @directory_url = URI(directory)
     @nonces ||= []
   end
 
   attr_reader :jwk, :nonces
 
-  def new_account(contact:, terms_of_service_agreed: nil)
+  def new_account(contact:, terms_of_service_agreed: nil, external_account_binding: nil)
+    new_account_endpoint = endpoint_for(:new_account)
     payload = {
       contact: Array(contact)
     }
@@ -58,7 +60,18 @@ class Acme::Client
       payload[:termsOfServiceAgreed] = terms_of_service_agreed
     end
 
-    response = post(endpoint_for(:new_account), payload: payload, mode: :jws)
+    if external_account_binding
+      kid, hmac_key = external_account_binding.values_at(:kid, :hmac_key)
+      if kid.nil? || hmac_key.nil?
+        raise ArgumentError, 'must specify kid and hmac_key key for external_account_binding'
+      end
+
+      hmac = Acme::Client::JWK::HMAC.new(Base64.urlsafe_decode64(hmac_key))
+      external_account_payload = hmac.jws(header: { kid: kid, url: new_account_endpoint }, payload: @jwk)
+      payload[:externalAccountBinding] = JSON.parse(external_account_payload)
+    end
+
+    response = post(new_account_endpoint, payload: payload, mode: :jws)
     @kid = response.headers.fetch(:location)
 
     if response.body.nil? || response.body.empty?
@@ -82,6 +95,28 @@ class Acme::Client
   def account_deactivate
     response = post(kid, payload: { status: 'deactivated' })
     arguments = attributes_from_account_response(response)
+    Acme::Client::Resources::Account.new(self, url: kid, **arguments)
+  end
+
+  def account_key_change(new_private_key: nil, new_jwk: nil)
+    if new_private_key.nil? && new_jwk.nil?
+      raise ArgumentError, 'must specify new_jwk or new_private_key'
+    end
+    old_jwk = jwk
+    new_jwk ||= Acme::Client::JWK.from_private_key(new_private_key)
+
+    inner_payload_header = {
+      url: endpoint_for(:key_change)
+    }
+    inner_payload = {
+      account: kid,
+      oldKey: old_jwk.to_h
+    }
+    payload = JSON.parse(new_jwk.jws(header: inner_payload_header, payload: inner_payload))
+
+    response = post(endpoint_for(:key_change), payload: payload, mode: :kid)
+    arguments = attributes_from_account_response(response)
+    @jwk = new_jwk
     Acme::Client::Resources::Account.new(self, url: kid, **arguments)
   end
 
@@ -140,9 +175,9 @@ class Acme::Client
     alternative_urls = Array(response.headers.fetch(:link, {})['alternate'])
     alternative_urls.each do |alternate_url|
       response = download(alternate_url, format: :pem)
-      alternate_pem = response.body
-      if ChainIdentifier.new(alternate_pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
-        return alternate_pem
+      pem = response.body
+      if ChainIdentifier.new(pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
+        return pem
       end
     end
 
@@ -191,33 +226,49 @@ class Acme::Client
   end
 
   def get_nonce
-    connection = new_connection(endpoint: endpoint_for(:new_nonce))
-    response = connection.head(nil, nil, 'User-Agent' => USER_AGENT)
+    http_client = Acme::Client::HTTPClient.new_connection(url: endpoint_for(:new_nonce), options: @connection_options)
+    response = http_client.head(nil, nil)
     nonces << response.headers['replay-nonce']
     true
   end
 
+  def directory
+    @directory ||= load_directory
+  end
+
   def meta
-    @directory.meta
+    directory.meta
   end
 
   def terms_of_service
-    @directory.terms_of_service
+    directory.terms_of_service
   end
 
   def website
-    @directory.website
+    directory.website
   end
 
   def caa_identities
-    @directory.caa_identities
+    directory.caa_identities
   end
 
   def external_account_required
-    @directory.external_account_required
+    directory.external_account_required
   end
 
   private
+
+  def load_directory
+    Acme::Client::Resources::Directory.new(self, directory: fetch_directory)
+  end
+
+  def fetch_directory
+    response = get(@directory_url)
+    response.body
+  rescue JSON::ParserError => exception
+    raise Acme::Client::Error::InvalidDirectory,
+      "Invalid directory url\n#{@directory_url} did not return a valid directory\n#{exception.inspect}"
+  end
 
   def prepare_order_identifiers(identifiers)
     if identifiers.is_a?(Hash)
@@ -284,7 +335,7 @@ class Acme::Client
     connection.post(url, nil)
   end
 
-  def get(url, mode: :kid)
+  def get(url, mode: :get)
     connection = connection_for(url: url, mode: mode)
     connection.get(url)
   end
@@ -300,41 +351,15 @@ class Acme::Client
   def connection_for(url:, mode:)
     uri = URI(url)
     endpoint = "#{uri.scheme}://#{uri.hostname}:#{uri.port}"
+
     @connections ||= {}
     @connections[mode] ||= {}
-    @connections[mode][endpoint] ||= new_acme_connection(endpoint: endpoint, mode: mode)
-  end
-
-  def new_acme_connection(endpoint:, mode:)
-    new_connection(endpoint: endpoint) do |configuration|
-      configuration.use Acme::Client::FaradayMiddleware, client: self, mode: mode
-    end
-  end
-
-  def new_connection(endpoint:)
-    Faraday.new(endpoint, **@connection_options) do |configuration|
-      if @bad_nonce_retry > 0
-        configuration.request(:retry,
-          max: @bad_nonce_retry,
-          methods: Faraday::Connection::METHODS,
-          exceptions: [Acme::Client::Error::BadNonce])
-      end
-      yield(configuration) if block_given?
-      configuration.adapter Faraday.default_adapter
-    end
-  end
-
-  def fetch_chain(response, limit = 10)
-    links = response.headers['link']
-    if limit.zero? || links.nil? || links['up'].nil?
-      []
-    else
-      issuer = get(links['up'])
-      [OpenSSL::X509::Certificate.new(issuer.body), *fetch_chain(issuer, limit - 1)]
-    end
+    @connections[mode][endpoint] ||= Acme::Client::HTTPClient.new_acme_connection(
+      url: URI(endpoint), mode: mode, client: self, options: @connection_options, bad_nonce_retry: @bad_nonce_retry
+    )
   end
 
   def endpoint_for(key)
-    @directory.endpoint_for(key)
+    directory.endpoint_for(key)
   end
 end
