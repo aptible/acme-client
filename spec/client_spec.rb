@@ -35,6 +35,15 @@ describe Acme::Client do
       client.nonces << 'invalid_nonce'
       client.new_account(contact: 'mailto:info@example.com', terms_of_service_agreed: true)
     end
+
+    it 'rescues a timeout error', vcr: { cassette_name: 'get_nonce' } do
+      stub_request(:head, %r{/nonce-plz})
+        .to_raise(Faraday::ConnectionFailed.new('Connection error'))
+
+      expect {
+        unregistered_client.get_nonce
+      }.to raise_error(Acme::Client::Error::Timeout)
+    end
   end
 
   context 'meta', vcr: { cassette_name: 'client_meta' } do
@@ -54,6 +63,38 @@ describe Acme::Client do
         expect {
           unregistered_client.new_account(contact: 'mailto:info@example.com', terms_of_service_agreed: false)
         }.to raise_error(Acme::Client::Error, 'Provided account did not agree to the terms of service')
+      end
+
+      let(:hmac_key) { 'ZzAJzgctYHnssCwf5swk1z1gC-bplzulO2fF3uwYUvyPsfug7OvSmp-xmZTy7uPqM1qP54gwj_CJM8sjpDJhfw' }
+      let(:kid) { 'sl61UO7lKgS0VOSO2BnQ9A' }
+      it 'use an invalid external account binding', vcr: { cassette_name: 'new_account_invalid_external_binding' } do
+        expect {
+          unregistered_client.new_account(
+            contact: 'mailto:info@example.com',
+            terms_of_service_agreed: true,
+            external_account_binding: { kid: kid, hmac_key: hmac_key }
+          )
+        }.to raise_error(Acme::Client::Error)
+      end
+
+      let(:hmac_key) { 'FEkpgzzQZUQ7qgBp3Ewa7VodVjFJMkX1l0aVXK2J_o3cQFZhuoDatKIymXJCl8v06Q0Wc56BASDtof2MZPT3gg' }
+      let(:kid) { 'AfAr-z9i9WvdIz5hgdtKBA' }
+      it 'use an valid external account binding', vcr: { cassette_name: 'new_account_valid_external_binding' } do
+        account = unregistered_client.new_account(
+          contact: 'mailto:info@example.com',
+          terms_of_service_agreed: true,
+          external_account_binding: { kid: kid, hmac_key: hmac_key }
+        )
+        expect(account.status).to eq('valid')
+      end
+
+      it 'rescues a timeout error', vcr: { cassette_name: 'new_account_agree_terms' } do
+        stub_request(:post, %r{/sign-me-up})
+          .to_raise(Faraday::ConnectionFailed.new('Connection error'))
+
+        expect {
+          unregistered_client.new_account(contact: 'mailto:info@example.com', terms_of_service_agreed: true)
+        }.to raise_error(Acme::Client::Error::Timeout)
       end
     end
 
@@ -102,6 +143,14 @@ describe Acme::Client do
         expect(
           deactivated_account.status
         ).to eq('deactivated')
+      end
+    end
+
+    context 'account key change' do
+      it 'changes the key', vcr: { cassette_name: 'account_key_change' } do
+        client.account_key_change(new_private_key: generate_private_key)
+
+        expect(client.account.status).to eq('valid')
       end
     end
   end
