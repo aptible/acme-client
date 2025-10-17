@@ -20,6 +20,7 @@ require 'acme/client/faraday_middleware'
 require 'acme/client/jwk'
 require 'acme/client/error'
 require 'acme/client/util'
+require 'acme/client/chain_identifier'
 
 class Acme::Client
   DEFAULT_DIRECTORY = 'http://127.0.0.1:4000/directory'.freeze
@@ -127,9 +128,27 @@ class Acme::Client
     Acme::Client::Resources::Order.new(self, **arguments)
   end
 
-  def certificate(url:)
+  # `force_chain_fingerprint` should be a SHA256 fingerprint of the expected CA in the chain.
+  # If both `force_chain` and `force_chain_fingerprint` are provided,
+  # `force_chain_fingerprint` takes precedence.
+  def certificate(url:, force_chain: nil, force_chain_fingerprint: nil)
     response = download(url, format: :pem)
-    response.body
+    pem = response.body
+
+    return pem if force_chain.nil? && force_chain_fingerprint.nil?
+
+    alternative_urls = Array(response.headers.fetch(:link, {})['alternate'])
+    alternative_urls.each do |alternate_url|
+      response = download(alternate_url, format: :pem)
+      alternate_pem = response.body
+      if ChainIdentifier.new(alternate_pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
+        return alternate_pem
+      end
+    end
+
+    return pem if ChainIdentifier.new(pem).match?(name: force_chain, fingerprint: force_chain_fingerprint)
+
+    raise Acme::Client::Error::ForcedChainNotFound, "Could not find any matching chain for `#{force_chain}`"
   end
 
   def authorization(url:)
