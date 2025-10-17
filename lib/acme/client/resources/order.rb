@@ -24,9 +24,9 @@ class Acme::Client::Resources::Order
     true
   end
 
-  def certificate(force_chain: nil)
+  def certificate(force_chain: nil, force_chain_fingerprint: nil)
     if certificate_url
-      @client.certificate(url: certificate_url, force_chain: force_chain)
+      @client.certificate(url: certificate_url, force_chain: force_chain, force_chain_fingerprint: force_chain_fingerprint)
     else
       raise Acme::Client::Error::CertificateNotReady, 'No certificate_url to collect the order'
     end
